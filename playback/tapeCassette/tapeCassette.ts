@@ -10,4 +10,8 @@ export abstract class TapeCassette {
   abstract getRecording(recordingId: string): Recording | undefined;
 
   abstract createNewRecording(category: string): Recording;
+
+  public abortRecording(recording: Recording): void {
+    recording.close();
+  }
 }

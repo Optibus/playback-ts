@@ -1,11 +1,12 @@
 import assert from "assert";
 import {
+  InputInterceptionKeyCreationError,
   OperationExceptionDuringPlayback,
   TapeRecorderException,
 } from "./exceptions";
 import { Recording } from "./recordings/recording";
 import { TapeCassette } from "./tapeCassette";
-import { MetaData, Output, Playback } from "./types";
+import { Output, Playback } from "./types";
 
 export const OPERATION_OUTPUT_ALIAS = `_tape_recorder_operation`;
 export const DURATION = "_tape_recorder_recording_duration";
@@ -14,11 +15,12 @@ export const EXCEPTION_IN_OPERATION = "_tape_recorder_exception_in_operation";
 
 export class TapeRecorder {
   readonly tapeCassette: TapeCassette;
-  private playbackRecording: any;
+  private playbackRecording?: Recording = undefined;
   private recordingEnabled: boolean = false;
   private playbackOutput: Output[] = [];
   private activeRecording?: Recording = undefined;
   private invokeCounter: Record<string, number> = {};
+  private currentlyInInterception: boolean = false;
 
   constructor(tapeCassette: TapeCassette) {
     this.tapeCassette = tapeCassette;
@@ -145,6 +147,77 @@ export class TapeRecorder {
 
   serializableExceptionForm(error: Error | string) {
     return JSON.stringify(error);
+  }
+
+  inRecordingMode(): boolean {
+    return this.recordingEnabled && this.activeRecording !== undefined;
+  }
+
+  shouldIntercept(): boolean {
+    return (
+      !this.currentlyInInterception &&
+      (this.inRecordingMode() || this.inPlaybackMode())
+    );
+  }
+
+  private inputInterceptionKey(alias: string, args: any[]): string {
+    return `input: ${alias} args=${JSON.stringify(args)}`;
+  }
+
+  private discardRecording() {
+    if (this.activeRecording) {
+      console.info(
+        `Recording with id ${this.activeRecording.id} was discarded`
+      );
+      this.tapeCassette.abortRecording(this.activeRecording);
+      this.resetActiveRecording();
+    }
+  }
+
+  private playbackRecordedInterception(
+    interceptionKey: string,
+    args: any[]
+  ): any {
+    const recorded = this.playbackRecording!.getData(interceptionKey);
+
+    if ("exception" in recorded) {
+      throw 
+    }
+  }
+
+  public interceptInput(params: { alias: string; func: Function }): Function {
+    const that = this;
+    function wrappedFunc(...args: any[]) {
+      if (!that.shouldIntercept()) {
+        return params.func(...args);
+      }
+
+      let interceptionKey;
+      try {
+        interceptionKey = that.inputInterceptionKey(params.alias, args);
+      } catch (error) {
+        const errorMessage = `Input interception key creation error for alias \'${
+          params.alias
+        }\' - ${JSON.stringify(error)}`;
+
+        if (that.inPlaybackMode()) {
+          throw new InputInterceptionKeyCreationError(errorMessage);
+        }
+
+        console.error(errorMessage);
+
+        interceptionKey = undefined;
+        that.discardRecording();
+      }
+
+      if (that.inPlaybackMode()) {
+        try {
+          return that.pla;
+        } catch (error) {}
+      }
+    }
+
+    return wrappedFunc;
   }
 
   public wrapOperation(category: string, func: Function): Function {

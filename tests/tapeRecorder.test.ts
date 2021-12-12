@@ -58,4 +58,27 @@ describe("tape recorder", () => {
     const playbackResult = tapeRecorder.play(recordingId, wrapOperation);
     assertPlaybackVsRecording(playbackResult, result);
   });
+
+  test.only("test record and playback basic operation data interception with arguments", () => {
+    let seed = 1;
+    function _getValue(a: number, b = 2): number {
+      return (a + b) * seed;
+    }
+
+    const getValue = tapeRecorder.interceptInput("getValue", _getValue);
+    function operation() {
+      const val1 = getValue(2, 3);
+      const val2 = getValue(4, 6);
+      return val1 + val2;
+    }
+
+    const wrapOperation = tapeRecorder.wrapOperation("operation", operation);
+    const result = wrapOperation();
+    expect(result).toBe(15);
+    seed = 2;
+    const recordingId = tapeCassette.getLastRecordingId();
+    expect(recordingId).toBeDefined();
+    const playbackResult = tapeRecorder.play(recordingId, wrapOperation);
+    assertPlaybackVsRecording(playbackResult, result);
+  });
 });
