@@ -1,4 +1,7 @@
-import { RecordingKeyError } from "../exceptions";
+import {
+  generatePlaybackException,
+  PlaybackExceptionTypes,
+} from "../exceptions";
 import { MetaData } from "../types";
 import { Recording } from "./recording";
 export class MemoryRecording extends Recording {
@@ -21,7 +24,10 @@ export class MemoryRecording extends Recording {
   }
   public getData(key: string): any {
     if (!(key in this.recordingData)) {
-      throw new RecordingKeyError(`Key \'${key}\' not found in recording`);
+      throw generatePlaybackException(
+        `Key \'${key}\' not found in recording`,
+        PlaybackExceptionTypes.RecordingKeyError
+      );
     }
 
     return this.recordingData[key];
