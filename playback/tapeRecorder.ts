@@ -1,19 +1,20 @@
 import assert from "assert";
 import {
   generatePlaybackException,
-  PlaybackExceptionTypes,
+  PlaybackExceptionTypes
 } from "./exceptions";
 import { Recording } from "./recordings/recording";
 import { TapeCassette } from "./tapeCassette";
 import { MetaData, Output, Playback } from "./types";
 
+export const OPERATION_INPUT_ALIAS = `_tape_recorder_operation_input`;
 export const OPERATION_OUTPUT_ALIAS = `_tape_recorder_operation`;
 export const DURATION = "_tape_recorder_recording_duration";
 export const RECORDED_AT = "_tape_recorder_recorded_at";
 export const EXCEPTION_IN_OPERATION = "_tape_recorder_exception_in_operation";
 
 export class TapeRecorder {
-  readonly tapeCassette: TapeCassette;
+  readonly tapeCassette?: TapeCassette;
   private playbackRecording?: Recording = undefined;
   private recordingEnabled: boolean = false;
   private playbackOutput: Output[] = [];
@@ -21,7 +22,7 @@ export class TapeRecorder {
   private invokeCounter: Record<string, number> = {};
   private currentlyInInterception: boolean = false;
 
-  constructor(tapeCassette: TapeCassette) {
+  constructor(tapeCassette?: TapeCassette) {
     this.tapeCassette = tapeCassette;
   }
 
@@ -31,7 +32,7 @@ export class TapeRecorder {
   }
 
   play(recordingId: string, playbackFunction: Function): Playback {
-    const recording = this.tapeCassette.getRecording(recordingId);
+    const recording = this.tapeCassette!.getRecording(recordingId);
     assert(recording !== undefined, "Recording not found");
     this.playbackRecording = recording;
     const start = Date.now();
@@ -171,7 +172,7 @@ export class TapeRecorder {
       console.info(
         `Recording with id ${this.activeRecording.id} was discarded`
       );
-      this.tapeCassette.abortRecording(this.activeRecording);
+      this.tapeCassette!.abortRecording(this.activeRecording);
       this.resetActiveRecording();
     }
   }
@@ -194,9 +195,25 @@ export class TapeRecorder {
     return recorded.value;
   }
 
+
+  public muteInterception<inputType extends Array<any>, outputType>(
+    func: (...args: inputType) => outputType
+  ) {
+    const that = this;
+    function wrappedFunc(...args: inputType) {
+      if (that.inPlaybackMode()) {
+        return {} as outputType;
+      } else {
+        return func(...args)
+      }
+    }
+    return wrappedFunc;
+  }
+
   public interceptInput<inputType extends Array<any>, outputType>(params: {
     alias: string;
     func: (...args: inputType) => outputType;
+    interceptionKeyArgsExtractor?: (args: inputType) => string;
   }): (...args: inputType) => outputType {
     const that = this;
     function wrappedFunc(...args: inputType) {
@@ -206,7 +223,12 @@ export class TapeRecorder {
 
       let interceptionKey;
       try {
-        interceptionKey = that.inputInterceptionKey(params.alias, args);
+        interceptionKey = that.inputInterceptionKey(
+          params.alias,
+          params.interceptionKeyArgsExtractor
+            ? [params.interceptionKeyArgsExtractor(args)]
+            : args
+        );
       } catch (error) {
         const errorMessage = `Input interception key creation error for alias \'${
           params.alias
@@ -322,7 +344,7 @@ export class TapeRecorder {
   }) {
     assert(!this.activeRecording, "Recording already active");
 
-    this.activeRecording = this.tapeCassette.createNewRecording(
+    this.activeRecording = this.tapeCassette!.createNewRecording(
       params.category
     );
     console.info(
@@ -331,6 +353,7 @@ export class TapeRecorder {
     const startTime = Date.now();
 
     try {
+      this.recordData(`input: ${OPERATION_INPUT_ALIAS}`, params.args)
       const result = this.executeOperationFunc(params.func, params.args);
       params.metadata[EXCEPTION_IN_OPERATION] = false;
       return result;
@@ -347,7 +370,7 @@ export class TapeRecorder {
       this.addPostOperationMetadata(recording, params.metadata, duration);
 
       try {
-        this.tapeCassette.saveRecording(recording);
+        this.tapeCassette!.saveRecording(recording);
         // TODO: make a pretty print of the duration
         console.info(
           `Finished recording of category ${params.category} with id ${recording.id}, recording duration ${duration}`

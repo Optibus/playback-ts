@@ -1,5 +1,13 @@
 import { InMemoryTapeCassette, Playback } from "../playback/";
-import { OPERATION_OUTPUT_ALIAS, TapeRecorder } from "../playback/tapeRecorder";
+import {
+  OPERATION_INPUT_ALIAS,
+  OPERATION_OUTPUT_ALIAS,
+  TapeRecorder,
+} from "../playback/tapeRecorder";
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 describe("tape recorder", () => {
   let tapeRecorder: TapeRecorder;
@@ -72,6 +80,34 @@ describe("tape recorder", () => {
         }
         const playbackResult = tapeRecorder.play(recordingId, wrapOperation);
         assertPlaybackVsRecording(playbackResult, result);
+      });
+
+      test("record and playback basic operation with parameters return an object", () => {
+        function operation(params: { a: number; b: string }, a: number) {
+          return { num: 5 };
+        }
+
+        const wrapOperation = tapeRecorder.wrapOperation(
+          "operation",
+          operation
+        );
+        const result = wrapOperation({ a: 3, b: "asd" }, 4);
+
+        expect(result).toMatchObject({ num: 5 });
+        const recordingId = tapeCassette.getLastRecordingId();
+        expect(recordingId).toBeDefined();
+        if (!recordingId) {
+          throw "recordingId must be defined";
+        }
+        const playbackResult = tapeRecorder.play(recordingId, wrapOperation);
+        assertPlaybackVsRecording(playbackResult, result);
+        const key = playbackResult.originalRecording
+          .getAllKeys()
+          .find((key) => key.includes(OPERATION_INPUT_ALIAS));
+        expect(key).toBeDefined();
+        expect(
+          playbackResult.originalRecording.getData(key as string)
+        ).toMatchObject([{ a: 3, b: "asd" }, 4]);
       });
     });
 
@@ -215,6 +251,90 @@ describe("tape recorder", () => {
 
       test.skip("test record and playback basic operation when creating interception key failed", () => {
         throw new Error("test");
+      });
+
+      test("test interceptionKeyArgsExtractor", () => {
+        let content: number[] = [];
+        function addContent(a: number): number {
+          return content.push(a);
+        }
+
+        const length = tapeRecorder.interceptInput({
+          alias: "getValue",
+          func: (): number => {
+            return content.length;
+          },
+          interceptionKeyArgsExtractor: (): string => {
+            return content.join("");
+          },
+        });
+
+        function operation() {
+          addContent(2);
+          addContent(6);
+          const result = length();
+          addContent(2);
+          addContent(6);
+          return result + length();
+        }
+
+        const wrapOperation = tapeRecorder.wrapOperation(
+          "operation",
+          operation
+        );
+        const result = wrapOperation();
+        expect(result).toBe(6);
+
+        content = [];
+        const recordingId = tapeCassette.getLastRecordingId();
+        expect(recordingId).toBeDefined();
+        if (!recordingId) {
+          throw "recordingId must be defined";
+        }
+        const playbackResult = tapeRecorder.play(recordingId, wrapOperation);
+        assertPlaybackVsRecording(playbackResult, result);
+      });
+
+      test.only("test record and playback basic operation data interception with arguments - async", async () => {
+        let seed = 1;
+        async function _getValue(a: number, b = 2): Promise<number> {
+          return delay(1000)
+            .then(() => {
+              return (a + b) * seed;
+            })
+            .catch((error) => {
+              throw error;
+            });
+        }
+
+        const getValue = tapeRecorder.interceptInput({
+          alias: "getValue",
+          func: _getValue,
+        });
+        async function operation() {
+          const val1 = await getValue(2, 3);
+          const val2 = await getValue(4, 6);
+
+          return val1 + val2;
+        }
+
+        const wrapOperation = tapeRecorder.wrapOperation(
+          "operation",
+          operation
+        );
+        const result = await wrapOperation();
+        expect(result).toBe(15);
+        seed = 2;
+        const recordingId = tapeCassette.getLastRecordingId();
+        expect(recordingId).toBeDefined();
+        if (!recordingId) {
+          throw "recordingId must be defined";
+        }
+        const playbackResult = await tapeRecorder.play(
+          recordingId,
+          wrapOperation
+        );
+        assertPlaybackVsRecording(playbackResult, result);
       });
     });
 
