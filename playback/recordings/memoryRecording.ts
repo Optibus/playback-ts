@@ -45,8 +45,8 @@ export class MemoryRecording extends Recording {
   public getData(key: string): any {
     if (!(key in this.recordingData)) {
       throw generatePlaybackException(
-        `Key \'${key}\' not found in recording`,
-        PlaybackExceptionTypes.RecordingKeyError
+        PlaybackExceptionTypes.RecordingKeyError,
+        `Key \'${key}\' not found in recording`
       );
     }
 
