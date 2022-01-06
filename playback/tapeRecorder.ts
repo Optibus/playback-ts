@@ -44,7 +44,7 @@ export class TapeRecorder {
   }
 
   /**
-   * Play again the recorder operation on current code
+   * Plays the recorder operation using current code
    * @param recordingId - the id of the recording to play
    * @param playbackFunction - A function that plays back the operation using the recording in the given id
    * @returns
@@ -106,7 +106,7 @@ export class TapeRecorder {
   }
 
   /**
-   * Executes the operation function record its output and return the result
+   * Executes the operation function, records its output and return the result
    * @param func - the function to execute
    * @param args - the arguments to pass to the function
    * @returns the result of the function execution
@@ -114,7 +114,7 @@ export class TapeRecorder {
   private executeOperationFunc(func: Function, args: any[]): any {
     const handleException = (error: any): any => {
       if (error.name == PlaybackExceptionTypes.TapeRecorderException) {
-        throw error;
+        return error;
       }
       this.recordOutput({
         alias: OPERATION_OUTPUT_ALIAS,
@@ -130,7 +130,7 @@ export class TapeRecorder {
         );
       }
 
-      throw error;
+      return error;
     };
     const handleResult = (result: any): any => {
       this.recordOutput({
@@ -144,7 +144,7 @@ export class TapeRecorder {
     try {
       result = func(...args);
     } catch (error) {
-      handleException(error);
+      throw handleException(error);
     }
 
     if (result && typeof result.then === "function") {
@@ -291,6 +291,10 @@ export class TapeRecorder {
     const recorded = this.playbackRecording!.getData(interceptionKey);
 
     if ("exception" in recorded) {
+      // if the recorded value is an exception, we need to throw it
+      // but if the exception was of type Error we need to serialize it and recreate it as a class Error.
+      // in general the playback framework do not support Class errors beside the Error class.
+      // this is because we cannot recreate the class object as the user create it.
       if (recorded.isError) {
         const errorData = JSON.parse(recorded.exception);
         Object.setPrototypeOf(errorData, Error.prototype);
@@ -379,9 +383,6 @@ export class TapeRecorder {
             args
           );
         } catch (error) {
-          if (error.name == PlaybackExceptionTypes.RecordingKeyError) {
-            return params.func(...args);
-          }
           throw error;
         }
       } else {
@@ -433,11 +434,7 @@ export class TapeRecorder {
 
       if (that.inPlaybackMode()) {
         // Return recording of input invocation
-        try {
-          return that.playbackRecordedInterception(interceptionKey, args);
-        } catch (error) {
-          throw error;
-        }
+        return that.playbackRecordedInterception(interceptionKey, args);
       } else {
         // Record the output result so it can be returned in playback mode
         return that.executeFuncAndRecordInterception(
@@ -523,7 +520,7 @@ export class TapeRecorder {
     const handleException = (error: any) => {
       params.metadata[EXCEPTION_IN_OPERATION] = true;
       cleanup();
-      throw error;
+      return error;
     };
 
     this.activeRecording = this.tapeCassette!.createNewRecording(
@@ -539,7 +536,7 @@ export class TapeRecorder {
       this.recordData(`input: ${OPERATION_INPUT_ALIAS}`, params.args);
       result = this.executeOperationFunc(params.func, params.args);
     } catch (error) {
-      handleException(error);
+      throw handleException(error);
     }
 
     if (result && typeof result.then === "function") {
@@ -629,7 +626,7 @@ export class TapeRecorder {
         }
       }
       cleanup();
-      throw error;
+      return error;
     };
 
     try {
@@ -641,8 +638,7 @@ export class TapeRecorder {
     if (result && typeof result.then === "function") {
       result.then(
         (realResult: any) => {
-          handleResult(realResult);
-          return realResult;
+          return handleResult(realResult);
         },
         (err: any) => {
           handleException(err);
