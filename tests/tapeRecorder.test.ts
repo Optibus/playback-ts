@@ -9,9 +9,6 @@ import {
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-const globalTapeCassette = new InMemoryTapeCassette();
-const globalTapeRecorder = new TapeRecorder(globalTapeCassette);
-globalTapeRecorder.enableRecording();
 
 describe("tape recorder", () => {
   jest.setTimeout(30000);
