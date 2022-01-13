@@ -5,7 +5,7 @@ import {
 } from "./exceptions";
 import { Recording } from "./recordings/recording";
 import { TapeCassette } from "./tapeCassette";
-import { MetaData, Output, Playback } from "./types";
+import { AllowUnwrap, MetaData, Output, Playback } from "./types";
 
 export const OPERATION_INPUT_ALIAS = `_tape_recorder_operation_input`;
 export const OPERATION_OUTPUT_ALIAS = `_tape_recorder_operation_output`;
@@ -19,7 +19,7 @@ export const EXCEPTION_IN_OPERATION = "_tape_recorder_exception_in_operation";
     wrap functions.
  */
 export class TapeRecorder {
-  readonly tapeCassette?: TapeCassette;
+  tapeCassette?: TapeCassette;
   private playbackRecording?: Recording = undefined;
   private recordingEnabled: boolean = false;
   private playbackOutput: Output[] = [];
@@ -63,7 +63,7 @@ export class TapeRecorder {
     try {
       await playbackFunction(recording);
     } catch (error) {
-      if (!(error.name = "OperationExceptionDuringPlayback")) {
+      if (!(error.name == "OperationExceptionDuringPlayback")) {
         throw error;
       }
       // This is an exception that was raised by the played back function, should be treated as part of the
@@ -291,6 +291,7 @@ export class TapeRecorder {
     const recorded = this.playbackRecording!.getData(interceptionKey);
 
     if ("exception" in recorded) {
+      let error;
       // if the recorded value is an exception, we need to throw it
       // but if the exception was of type Error we need to serialize it and recreate it as a class Error.
       // in general the playback framework do not support Class errors beside the Error class.
@@ -298,9 +299,15 @@ export class TapeRecorder {
       if (recorded.isError) {
         const errorData = JSON.parse(recorded.exception);
         Object.setPrototypeOf(errorData, Error.prototype);
-        throw errorData;
+        error = errorData;
       } else {
-        throw recorded.exception;
+        error = recorded.exception;
+      }
+
+      if (recorded.isPromise) {
+        return Promise.reject(error);
+      } else {
+        throw error;
       }
     }
     return recorded.value;
@@ -316,12 +323,12 @@ export class TapeRecorder {
    */
   public muteInterception<inputType extends Array<any>, outputType>(
     func: (...args: inputType) => outputType,
-    playbackValue?: outputType
+    playbackValue?: AllowUnwrap<outputType>
   ): (...args: inputType) => outputType {
     const that = this;
-    function wrappedFunc(...args: inputType) {
+    function wrappedFunc(...args: inputType): outputType {
       if (that.inPlaybackMode()) {
-        return playbackValue ?? ({} as outputType);
+        return (playbackValue ?? {}) as outputType;
       } else {
         return func(...args);
       }
@@ -377,14 +384,10 @@ export class TapeRecorder {
       //#endregion
 
       if (that.inPlaybackMode()) {
-        try {
-          return that.playbackRecordedInterception(
-            interceptionKey as string,
-            args
-          );
-        } catch (error) {
-          throw error;
-        }
+        return that.playbackRecordedInterception(
+          interceptionKey as string,
+          args
+        );
       } else {
         return that.executeFuncAndRecordInterception(
           params.func,
@@ -458,7 +461,8 @@ export class TapeRecorder {
    */
   public wrapOperation<inputType extends Array<any>, outputType>(
     category: string,
-    func: (...args: inputType) => outputType
+    func: (...args: inputType) => outputType,
+    metadata: MetaData = {}
   ): (...args: inputType) => outputType {
     const that = this;
     function wrappedFunc(...args: inputType): outputType {
@@ -468,7 +472,7 @@ export class TapeRecorder {
         return func(...args);
       }
 
-      return that.executeWithRecording({ category, metadata: {}, func, args });
+      return that.executeWithRecording({ category, metadata, func, args });
     }
 
     return wrappedFunc;
@@ -613,16 +617,17 @@ export class TapeRecorder {
       return result;
     };
 
-    const handleException = (error: any) => {
+    const handleException = (error: any, isPromise: boolean) => {
       if (interceptionKey) {
         // Error object is not easily serializable so we did some workaround to store it
         if (error instanceof Error) {
           this.recordData(interceptionKey, {
             isError: true,
             exception: JSON.stringify(error, Object.getOwnPropertyNames(error)),
+            isPromise,
           });
         } else {
-          this.recordData(interceptionKey, { exception: error });
+          this.recordData(interceptionKey, { exception: error, isPromise });
         }
       }
       cleanup();
@@ -632,7 +637,7 @@ export class TapeRecorder {
     try {
       result = func(...args);
     } catch (error) {
-      throw handleException(error);
+      throw handleException(error, false);
     }
 
     if (result && typeof result.then === "function") {
@@ -641,7 +646,7 @@ export class TapeRecorder {
           return handleResult(realResult);
         },
         (err: any) => {
-          handleException(err);
+          handleException(err, true);
         }
       );
     } else {
