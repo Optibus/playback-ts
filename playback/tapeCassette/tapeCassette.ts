@@ -1,4 +1,4 @@
-import { Recording } from "playback/";
+import { Recording } from "../recordings";
 
 /**
  * An abstract class that acts as a storage driver for TapeRecorder to store and fetch recordings

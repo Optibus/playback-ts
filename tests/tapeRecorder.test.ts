@@ -3,7 +3,7 @@ import { PlaybackExceptionTypes } from "../playback/exceptions";
 import {
   OPERATION_INPUT_ALIAS,
   OPERATION_OUTPUT_ALIAS,
-  TapeRecorder,
+  TapeRecorder
 } from "../playback/tapeRecorder";
 
 function delay(ms: number): Promise<void> {
@@ -520,6 +520,94 @@ describe("tape recorder", () => {
           assertPlaybackVsRecording(playbackResult, result);
         });
 
+        test("test record and playback basic operation data interception with Error exception - promise then", async () => {
+          async function _getValue(a: number, b = 2): Promise<number> {
+            await delay(1000);
+            throw new Error(`sum = ${a + b}`);
+          }
+
+          const getValue = tapeRecorder.interceptInput({
+            alias: "getValue",
+            func: _getValue,
+          });
+          async function operation() {
+            const p = getValue(2, 3);
+            return p.then(
+              (value) => {
+                console.log("then");
+                return value;
+              },
+              (error) => {
+                console.log("error");
+                return error.message;
+              }
+            );
+          }
+
+          const wrapOperation = tapeRecorder.wrapOperation(
+            "operation",
+            operation
+          );
+
+          const result = await wrapOperation();
+          expect(result).toBe(`sum = 5`);
+
+          const recordingId = tapeCassette.getLastRecordingId();
+          expect(recordingId).toBeDefined();
+          if (!recordingId) {
+            throw "recordingId must be defined";
+          }
+
+          const playbackResult = await tapeRecorder.play(
+            recordingId,
+            wrapOperation
+          );
+          assertPlaybackVsRecording(playbackResult, result);
+        });
+
+        test("test record and playback basic operation data interception with Error exception - promise then catch", async () => {
+          async function _getValue(a: number, b = 2): Promise<number> {
+            await delay(1000);
+            throw new Error(`sum = ${a + b}`);
+          }
+
+          const getValue = tapeRecorder.interceptInput({
+            alias: "getValue",
+            func: _getValue,
+          });
+          async function operation() {
+            const p = getValue(2, 3);
+            return p.then(
+              (value) => {
+                console.log("then");
+                return value;
+              }).catch((error) => {,
+                console.log("error");
+                return error.message;
+              }
+            );
+          }
+
+          const wrapOperation = tapeRecorder.wrapOperation(
+            "operation",
+            operation
+          );
+
+          const result = await wrapOperation();
+          expect(result).toBe(`sum = 5`);
+
+          const recordingId = tapeCassette.getLastRecordingId();
+          expect(recordingId).toBeDefined();
+          if (!recordingId) {
+            throw "recordingId must be defined";
+          }
+
+          const playbackResult = await tapeRecorder.play(
+            recordingId,
+            wrapOperation
+          );
+          assertPlaybackVsRecording(playbackResult, result);
+        });
         test("test record and playback basic operation mute interception with arguments", async () => {
           let secret = "secret";
 
