@@ -1,51 +1,22 @@
-
-export class OperationExceptionDuringPlayback extends Error {
-  constructor(m = "") {
-    super(m);
-
-    // Set the prototype explicitly.
-    Object.setPrototypeOf(this, OperationExceptionDuringPlayback.prototype);
-  }
+export enum PlaybackExceptionTypes {
+  OperationExceptionDuringPlayback = "OperationExceptionDuringPlayback",
+  TapeRecorderException = "TapeRecorderException",
+  RecordingKeyError = "RecordingKeyError",
+  InputInterceptionKeyCreationError = "InputInterceptionKeyCreationError",
 }
 
-export class TapeRecorderException extends Error {
-  constructor(m = "") {
-    super(m);
-
-    // Set the prototype explicitly.
-    Object.setPrototypeOf(this, TapeRecorderException.prototype);
-  }
-}
-
-export class RecordingKeyError extends Error {
-  constructor(m = "") {
-    super(m);
-
-    // Set the prototype explicitly.
-    Object.setPrototypeOf(this, RecordingKeyError.prototype);
-  }
-}
-export class InputInterceptionKeyCreationError extends Error {
-  constructor(m = "") {
-    super(m);
-
-    // Set the prototype explicitly.
-    Object.setPrototypeOf(this, RecordingKeyError.prototype);
-  }
-}
-
-export class InterceptedError extends Error {
-  readonly instanceType: string;
-  constructor(error: Error, instanceType: string) {
-    super(error.message);
-    this.name = error.name;
-    this.stack = error.stack;
-    this.instanceType = instanceType;
-
-    // Set the prototype explicitly.
-    Object.setPrototypeOf(this, InterceptedError.prototype);
-  }
-
-  instanceof(error: Class): boolean {
-    return typeof error === this.instanceType;
+/**
+ * Generate an Error object with the given message and type
+ * @param type - the type of the exception (from PlaybackExceptionTypes)
+ * @param msg - the exception message
+ * @default msg - empty message
+ * @returns The error object
+ */
+export function generatePlaybackException(
+  type: PlaybackExceptionTypes,
+  msg = ""
+): Error {
+  const error = new Error(msg);
+  error.name = type;
+  return error;
 }

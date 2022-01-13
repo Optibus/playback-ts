@@ -1,20 +1,25 @@
 import assert from "assert";
 import {
-  InputInterceptionKeyCreationError,
-  OperationExceptionDuringPlayback,
-  TapeRecorderException,
+  generatePlaybackException,
+  PlaybackExceptionTypes,
 } from "./exceptions";
 import { Recording } from "./recordings/recording";
 import { TapeCassette } from "./tapeCassette";
-import { Output, Playback } from "./types";
+import { AllowUnwrap, MetaData, Output, Playback } from "./types";
 
-export const OPERATION_OUTPUT_ALIAS = `_tape_recorder_operation`;
+export const OPERATION_INPUT_ALIAS = `_tape_recorder_operation_input`;
+export const OPERATION_OUTPUT_ALIAS = `_tape_recorder_operation_output`;
 export const DURATION = "_tape_recorder_recording_duration";
 export const RECORDED_AT = "_tape_recorder_recorded_at";
 export const EXCEPTION_IN_OPERATION = "_tape_recorder_exception_in_operation";
 
+/**
+ *  This class is used to "record" operation and "replay" (rerun) recorded operation on any code version.
+ *  The recording is done by placing different wrappers that intercepts the operation, its inputs and outputs by using
+    wrap functions.
+ */
 export class TapeRecorder {
-  readonly tapeCassette: TapeCassette;
+  tapeCassette?: TapeCassette;
   private playbackRecording?: Recording = undefined;
   private recordingEnabled: boolean = false;
   private playbackOutput: Output[] = [];
@@ -22,17 +27,33 @@ export class TapeRecorder {
   private invokeCounter: Record<string, number> = {};
   private currentlyInInterception: boolean = false;
 
-  constructor(tapeCassette: TapeCassette) {
+  /**
+   * Initializes the tape recording.
+   * @param tapeCassette - the cassette to use for recording.
+   */
+  constructor(tapeCassette?: TapeCassette) {
     this.tapeCassette = tapeCassette;
   }
 
-  enableRecording() {
+  /**
+   * Enable recording and interception for all wrapped functions
+   */
+  enableRecording(): void {
     console.info("Enabling recording");
     this.recordingEnabled = true;
   }
 
-  play(recordingId: string, playbackFunction: Function): Playback {
-    const recording = this.tapeCassette.getRecording(recordingId);
+  /**
+   * Plays the recorder operation using current code
+   * @param recordingId - the id of the recording to play
+   * @param playbackFunction - A function that plays back the operation using the recording in the given id
+   * @returns
+   */
+  async play(
+    recordingId: string,
+    playbackFunction: Function
+  ): Promise<Playback> {
+    const recording = this.tapeCassette!.getRecording(recordingId);
     assert(recording !== undefined, "Recording not found");
     this.playbackRecording = recording;
     const start = Date.now();
@@ -40,15 +61,18 @@ export class TapeRecorder {
     let playbackDuration;
     let playbackOutputs;
     try {
-      playbackFunction(recording);
+      await playbackFunction(recording);
     } catch (error) {
-      if (!(error instanceof OperationExceptionDuringPlayback)) {
+      if (!(error.name == "OperationExceptionDuringPlayback")) {
         throw error;
       }
+      // This is an exception that was raised by the played back function, should be treated as part of the
+      // recording output
     } finally {
       playbackDuration = Date.now() - start;
       playbackOutputs = this.playbackOutput;
       this.playbackRecording = undefined;
+      // Clear any previous invocation counter state
       this.playbackOutput = [];
       this.invokeCounter = {};
     }
@@ -65,6 +89,11 @@ export class TapeRecorder {
     };
   }
 
+  /**
+   * Generate the outputs for the given recording
+   * @param recording - the recording to extract the outputs from
+   * @returns the extracted outputs
+   */
   private extractRecordedOutput(recording: Recording): Output[] {
     return recording
       .getAllKeys()
@@ -76,13 +105,16 @@ export class TapeRecorder {
       });
   }
 
+  /**
+   * Executes the operation function, records its output and return the result
+   * @param func - the function to execute
+   * @param args - the arguments to pass to the function
+   * @returns the result of the function execution
+   */
   private executeOperationFunc(func: Function, args: any[]): any {
-    let result: any;
-    try {
-      result = func(...args);
-    } catch (error) {
-      if (error instanceof TapeRecorderException) {
-        throw error;
+    const handleException = (error: any): any => {
+      if (error.name == PlaybackExceptionTypes.TapeRecorderException) {
+        return error;
       }
       this.recordOutput({
         alias: OPERATION_OUTPUT_ALIAS,
@@ -91,26 +123,60 @@ export class TapeRecorder {
       });
 
       if (this.inPlaybackMode()) {
-        throw new OperationExceptionDuringPlayback();
+        // In playback mode we want to capture this as an error that is an output of the function
+        //  which is a legit recorded result, and not fail the playback it self
+        throw generatePlaybackException(
+          PlaybackExceptionTypes.OperationExceptionDuringPlayback
+        );
       }
 
-      throw error;
+      return error;
+    };
+    const handleResult = (result: any): any => {
+      this.recordOutput({
+        alias: OPERATION_OUTPUT_ALIAS,
+        invocationNumber: 1,
+        args: [result],
+      });
+    };
+
+    let result: any;
+    try {
+      result = func(...args);
+    } catch (error) {
+      throw handleException(error);
     }
 
-    this.recordOutput({
-      alias: OPERATION_OUTPUT_ALIAS,
-      invocationNumber: 1,
-      args: [result],
-    });
+    if (result && typeof result.then === "function") {
+      result.then(
+        (realResult: any) => {
+          handleResult(realResult);
+
+          return realResult;
+        },
+        (err: any) => {
+          handleException(err);
+        }
+      );
+    } else {
+      // We record the operation result as an output
+      handleResult(result);
+    }
 
     return result;
   }
 
+  /**
+   * Record the given invocation as output
+   * @param params.alias - the alias of the function that was invoked
+   * @param params.invocationNumber - Current invocation number for the given alias
+   * @param params.args - the input arguments for the invocation
+   */
   recordOutput(params: {
     alias: string;
     invocationNumber: number;
     args: any[];
-  }) {
+  }): void {
     const interceptionKey =
       this.outputInterceptionKey(params.alias, params.invocationNumber) +
       ".output";
@@ -127,7 +193,12 @@ export class TapeRecorder {
     this.recordData(interceptionKey, params.args);
   }
 
-  recordData(key: string, data: any) {
+  /**
+   * Puts current data under given key in the current recording
+   * @param key - the key to put the data under
+   * @param data - the data to put
+   */
+  recordData(key: string, data: any): void {
     this.assertRecording();
     console.log(
       `Recording data for recording id ${
@@ -137,22 +208,46 @@ export class TapeRecorder {
     this.activeRecording!.setData(key, data);
   }
 
-  assertRecording() {
+  /**
+   * Assert there is active recording
+   * @throws if there is no active recording
+   */
+  assertRecording(): void {
     assert(this.activeRecording !== undefined, "No active recording");
   }
 
+  /**
+   * Creates a key that uniquely represents the output invocation based on alias in invocation count
+   * @param alias - the output alias
+   * @param invocationNumber - the invocation number
+   * @returns the interception key
+   */
   outputInterceptionKey(alias: any, invocationNumber: any): string {
     return `output: ${alias} #${invocationNumber}`;
   }
 
-  serializableExceptionForm(error: Error | string) {
+  /**
+   * serialize the given exception to a string
+   * @param error - the error to serialize
+   * @returns the serialized error
+   */
+  serializableExceptionForm(error: Error | any): string {
+    if (error instanceof Error) {
+      return JSON.stringify(error, Object.getOwnPropertyNames(error));
+    }
     return JSON.stringify(error);
   }
 
+  /**
+   * @returns if the tape recorder is currently in recording mode
+   */
   inRecordingMode(): boolean {
     return this.recordingEnabled && this.activeRecording !== undefined;
   }
 
+  /**
+   * @returns if the tape recorder should intercept input/output
+   */
   shouldIntercept(): boolean {
     return (
       !this.currentlyInInterception &&
@@ -160,20 +255,35 @@ export class TapeRecorder {
     );
   }
 
+  /**
+   * Generate the interception key for the given invocation, based on the alias and invocation number
+   * @param alias - the invocation alias
+   * @param args - the invocation arguments
+   * @returns the interception key
+   */
   private inputInterceptionKey(alias: string, args: any[]): string {
     return `input: ${alias} args=${JSON.stringify(args)}`;
   }
 
-  private discardRecording() {
+  /**
+   * Disable the current recording
+   */
+  private discardRecording(): void {
     if (this.activeRecording) {
       console.info(
         `Recording with id ${this.activeRecording.id} was discarded`
       );
-      this.tapeCassette.abortRecording(this.activeRecording);
+      this.tapeCassette!.abortRecording(this.activeRecording);
       this.resetActiveRecording();
     }
   }
 
+  /**
+   * Playback the recorded data (value or exception) under the given interception key
+   * @param interceptionKey - the interception key to playback
+   * @param args - the arguments to pass to the function
+   * @returns Recorded intercepted value
+   */
   private playbackRecordedInterception(
     interceptionKey: string,
     args: any[]
@@ -181,27 +291,89 @@ export class TapeRecorder {
     const recorded = this.playbackRecording!.getData(interceptionKey);
 
     if ("exception" in recorded) {
-      throw 
+      let error;
+      // if the recorded value is an exception, we need to throw it
+      // but if the exception was of type Error we need to serialize it and recreate it as a class Error.
+      // in general the playback framework do not support Class errors beside the Error class.
+      // this is because we cannot recreate the class object as the user create it.
+      if (recorded.isError) {
+        const errorData = JSON.parse(recorded.exception);
+        Object.setPrototypeOf(errorData, Error.prototype);
+        error = errorData;
+      } else {
+        error = recorded.exception;
+      }
+
+      if (recorded.isPromise) {
+        return Promise.reject(error);
+      } else {
+        throw error;
+      }
     }
+    return recorded.value;
   }
 
-  public interceptInput(params: { alias: string; func: Function }): Function {
+  /**
+   * generate interception that do not do anything in playback mode.
+   * used for intercepting functions that should not be recorded .
+   * in playback mode, this function return playbackValue or an empty object
+   * @param func - the function to intercept
+   * @param playbackValue - the value to return in playback mode
+   * @returns the intercepted function
+   */
+  public muteInterception<inputType extends Array<any>, outputType>(
+    func: (...args: inputType) => outputType,
+    playbackValue?: AllowUnwrap<outputType>
+  ): (...args: inputType) => outputType {
     const that = this;
-    function wrappedFunc(...args: any[]) {
+    function wrappedFunc(...args: inputType): outputType {
+      if (that.inPlaybackMode()) {
+        return (playbackValue ?? {}) as outputType;
+      } else {
+        return func(...args);
+      }
+    }
+    return wrappedFunc;
+  }
+
+  /**
+   * wrap a function that that acts as an input to the operation, the result of the function is the
+   *  recorded input and the passed arguments and function name (or alias) or used as key for the input
+   * @param params.alias - the alias of the function that was invoked
+   * @param params.func - the function to intercept
+   * @param params.interceptionKeyArgsExtractor - a function that extract the arguments for the interception key
+   * @default params.interceptionKeyArgsExtractor = (args) => args
+   * @returns the intercepted function
+   */
+  public interceptInput<inputType extends Array<any>, outputType>(params: {
+    alias: string;
+    func: (...args: inputType) => outputType;
+    interceptionKeyArgsExtractor?: (args: inputType) => string;
+  }): (...args: inputType) => outputType {
+    const that = this;
+    function wrappedFunc(...args: inputType) {
       if (!that.shouldIntercept()) {
         return params.func(...args);
       }
-
+      //#region generate interceptionKey
       let interceptionKey;
       try {
-        interceptionKey = that.inputInterceptionKey(params.alias, args);
+        interceptionKey = that.inputInterceptionKey(
+          params.alias,
+          params.interceptionKeyArgsExtractor
+            ? [params.interceptionKeyArgsExtractor(args)]
+            : args
+        );
       } catch (error) {
         const errorMessage = `Input interception key creation error for alias \'${
           params.alias
         }\' - ${JSON.stringify(error)}`;
 
         if (that.inPlaybackMode()) {
-          throw new InputInterceptionKeyCreationError(errorMessage);
+          throw generatePlaybackException(
+            PlaybackExceptionTypes.InputInterceptionKeyCreationError,
+            errorMessage
+          );
         }
 
         console.error(errorMessage);
@@ -209,41 +381,153 @@ export class TapeRecorder {
         interceptionKey = undefined;
         that.discardRecording();
       }
+      //#endregion
 
       if (that.inPlaybackMode()) {
-        try {
-          return that.pla;
-        } catch (error) {}
+        return that.playbackRecordedInterception(
+          interceptionKey as string,
+          args
+        );
+      } else {
+        return that.executeFuncAndRecordInterception(
+          params.func,
+          args,
+          interceptionKey
+        );
       }
     }
 
     return wrappedFunc;
   }
 
-  public wrapOperation(category: string, func: Function): Function {
+  /**
+   * Wrap a function that that acts as an output of the operation, the arguments are recorded as the output and
+   *    the result of the function is captured.
+   * output and the result of the function is captured
+   * @param params.alias - the alias of the function that was invoked
+   * @param params.func - the function to intercept
+   * @returns the intercepted function
+   */
+  public interceptOutput<inputType extends Array<any>, outputType>(params: {
+    alias: string;
+    func: (...args: inputType) => outputType;
+  }): (...args: inputType) => outputType {
     const that = this;
-    function wrappedFunc(...args: any[]) {
+
+    function wrappedFunc(...args: inputType) {
+      if (!that.shouldIntercept()) {
+        return params.func(...args);
+      }
+
+      // If same alias(function) is invoked more than once we want to track each output invocation
+      that.invokeCounter[params.alias] =
+        that.invokeCounter[params.alias] + 1 || 1;
+      const invocationNumber = that.invokeCounter[params.alias] as number;
+
+      // Both in recording and playback mode we record what is sent to the output
+      that.recordOutput({ alias: params.alias, invocationNumber, args });
+
+      // Record output may have failed and discarded current recording which would make should intercept false
+      if (!that.shouldIntercept) {
+        return params.func(...args);
+      }
+
+      const interceptionKey =
+        that.outputInterceptionKey(params.alias, invocationNumber) + ".result";
+
+      if (that.inPlaybackMode()) {
+        // Return recording of input invocation
+        return that.playbackRecordedInterception(interceptionKey, args);
+      } else {
+        // Record the output result so it can be returned in playback mode
+        return that.executeFuncAndRecordInterception(
+          params.func,
+          args,
+          interceptionKey
+        );
+      }
+    }
+
+    return wrappedFunc;
+  }
+
+  /**
+   * Wrap an operation (entry point) so it could be recorded and played back.
+   * in recording flow the function will be executed and the result is recorded
+   * and in playback mode the function run with the recorded input and output.
+   * @param category - the category of the operation
+   * @param func - the function to wrap
+   * @returns the wrapped function
+   */
+  public wrapOperation<inputType extends Array<any>, outputType>(
+    category: string,
+    func: (...args: inputType) => outputType,
+    metadata: MetaData = {}
+  ): (...args: inputType) => outputType {
+    const that = this;
+    function wrappedFunc(...args: inputType): outputType {
       if (that.inPlaybackMode()) {
         return that.executeOperationFunc(func, args);
       } else if (!that.recordingEnabled) {
         return func(...args);
       }
 
-      return that.executeWithRecording({ category, metadata: {}, func, args });
+      return that.executeWithRecording({ category, metadata, func, args });
     }
 
     return wrappedFunc;
   }
 
-  executeWithRecording(params: {
+  /**
+   * execute the function and record the result of the function.
+   * the new recording is create and store in the recorder tape cassette
+   * @param category - the category of the function
+   * @param params.func - the function to execute
+   * @param params.args - the arguments for the function
+   * @param params.metadata - the operation metadata (could be changed during the function run)
+   * @returns the result of the function
+   */
+  executeWithRecording<inputType extends Array<any>, outputType>(params: {
     category: string;
     metadata: MetaData;
-    func: Function;
+    func: (...args: inputType) => outputType;
     args: any[];
-  }) {
+  }): outputType {
     assert(!this.activeRecording, "Recording already active");
 
-    this.activeRecording = this.tapeCassette.createNewRecording(
+    const cleanup = () => {
+      if (this.activeRecording !== undefined) {
+        const duration = Date.now() - startTime;
+        const recording = this.activeRecording;
+        this.resetActiveRecording();
+        this.addPostOperationMetadata(recording, params.metadata, duration);
+
+        try {
+          this.tapeCassette!.saveRecording(recording);
+          // TODO: make a pretty print of the duration
+          console.info(
+            `Finished recording of category ${params.category} with id ${recording.id}, recording duration ${duration}`
+          );
+        } catch (error) {
+          console.error(
+            `Failed saving recording of category ${params.category} with id ${recording.id} error=${error}`
+          );
+        }
+      }
+    };
+
+    const handleResult = (result: outputType) => {
+      params.metadata[EXCEPTION_IN_OPERATION] = false;
+      cleanup();
+      return result;
+    };
+    const handleException = (error: any) => {
+      params.metadata[EXCEPTION_IN_OPERATION] = true;
+      cleanup();
+      return error;
+    };
+
+    this.activeRecording = this.tapeCassette!.createNewRecording(
       params.category
     );
     console.info(
@@ -251,52 +535,124 @@ export class TapeRecorder {
     );
     const startTime = Date.now();
 
+    let result;
     try {
-      const result = this.executeOperationFunc(params.func, params.args);
-      params.metadata[EXCEPTION_IN_OPERATION] = false;
-      return result;
+      this.recordData(`input: ${OPERATION_INPUT_ALIAS}`, params.args);
+      result = this.executeOperationFunc(params.func, params.args);
     } catch (error) {
-      params.metadata[EXCEPTION_IN_OPERATION] = true;
-      throw error;
-    } finally {
-      if (this.assertRecording === undefined) {
-        return;
-      }
-      const duration = Date.now() - startTime;
-      const recording = this.activeRecording;
-      this.resetActiveRecording();
-      this.addPostOperationMetadata(recording, params.metadata, duration);
-
-      try {
-        this.tapeCassette.saveRecording(recording);
-        // TODO: make a pretty print of the duration
-        console.info(
-          `Finished recording of category ${params.category} with id ${recording.id}, recording duration ${duration}`
-        );
-      } catch (error) {
-        console.error(
-          `Failed saving recording of category ${params.category} with id ${recording.id} error=${error}`
-        );
-      }
+      throw handleException(error);
     }
+
+    if (result && typeof result.then === "function") {
+      result.then(
+        (realResult: any) => {
+          handleResult(realResult);
+          return realResult;
+        },
+        (err: any) => {
+          handleException(err);
+        }
+      );
+    } else {
+      return handleResult(result);
+    }
+
+    return result;
   }
 
+  /**
+   * Add metadata to the recording after the operation has been executed
+   * @param recording - the recording to add the metadata to
+   * @param metadata - the metadata to add, will be added the duration and dates
+   * @param duration - the duration of the operation
+   */
   addPostOperationMetadata(
     recording: Recording,
     metadata: MetaData,
     duration: number
-  ) {
+  ): void {
     metadata[RECORDED_AT] = new Date().toUTCString();
     metadata[DURATION] = duration;
     recording.addMetadata(metadata);
   }
 
-  resetActiveRecording() {
+  /**
+   * reset the active recording and invoke counter
+   */
+  resetActiveRecording(): void {
     this.activeRecording = undefined;
     this.invokeCounter = {};
   }
 
-  inPlaybackMode() {
+  /**
+   * @returns if the tape recorder is in playback mode
+   */
+  inPlaybackMode(): boolean {
     return this.playbackRecording !== undefined;
+  }
+
+  /**
+   * Executes the given function and record the result/exception of the outcome
+   * @param func - the function to execute
+   * @param args - the arguments for the function
+   * @param interceptionKey - the key to store the result/exception in the tape cassette
+   * @returns the result of the function
+   */
+  executeFuncAndRecordInterception<inputType extends Array<any>, outputType>(
+    func: (...args: inputType) => outputType,
+    args: inputType,
+    interceptionKey?: string
+  ): outputType {
+    this.currentlyInInterception = true;
+    let result: any;
+
+    const cleanup = () => {
+      this.currentlyInInterception = false;
+    };
+    const handleResult = (result: outputType): outputType => {
+      if (interceptionKey) {
+        this.recordData(interceptionKey, { value: result });
+      }
+      cleanup();
+      return result;
+    };
+
+    const handleException = (error: any, isPromise: boolean) => {
+      if (interceptionKey) {
+        // Error object is not easily serializable so we did some workaround to store it
+        if (error instanceof Error) {
+          this.recordData(interceptionKey, {
+            isError: true,
+            exception: JSON.stringify(error, Object.getOwnPropertyNames(error)),
+            isPromise,
+          });
+        } else {
+          this.recordData(interceptionKey, { exception: error, isPromise });
+        }
+      }
+      cleanup();
+      return error;
+    };
+
+    try {
+      result = func(...args);
+    } catch (error) {
+      throw handleException(error, false);
+    }
+
+    if (result && typeof result.then === "function") {
+      result.then(
+        (realResult: any) => {
+          return handleResult(realResult);
+        },
+        (err: any) => {
+          handleException(err, true);
+        }
+      );
+    } else {
+      return handleResult(result);
+    }
+
+    return result;
   }
 }

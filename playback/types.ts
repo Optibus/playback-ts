@@ -1,4 +1,6 @@
-import { Recording } from "playback";
+import { Recording } from "./recordings";
+
+export type AllowUnwrap<T> = T extends PromiseLike<infer U> ? U | T : T;
 
 export type Output = { key: string; value: any };
 export type MetaData = Record<string, any>;
