@@ -13,6 +13,33 @@ export const DURATION = "_tape_recorder_recording_duration";
 export const RECORDED_AT = "_tape_recorder_recorded_at";
 export const EXCEPTION_IN_OPERATION = "_tape_recorder_exception_in_operation";
 
+enum RecordingDataType {
+  Data = "data",
+  Exception = "exception",
+}
+
+type RecordedValue = {
+  type: RecordingDataType.Data;
+  isPromise?: boolean;
+  value: any;
+};
+
+type RecordedException = {
+  type: RecordingDataType.Exception;
+  isPromise?: boolean;
+  isError?: boolean;
+  exception: any;
+};
+type RecordedData = RecordedValue | RecordedException;
+
+export function extractData(data: RecordedData): any {
+  if (data.type === RecordingDataType.Data) {
+    return data.value;
+  } else {
+    return data.exception;
+  }
+}
+
 /**
  *  This class is used to "record" operation and "replay" (rerun) recorded operation on any code version.
  *  The recording is done by placing different wrappers that intercepts the operation, its inputs and outputs by using
@@ -101,7 +128,7 @@ export class TapeRecorder {
         return key.startsWith("output:") && !key.endsWith("result");
       })
       .map((key): Output => {
-        return { key, value: recording.getData(key) };
+        return { key, value: extractData(recording.getData(key)) };
       });
   }
 
@@ -190,7 +217,10 @@ export class TapeRecorder {
       return;
     }
 
-    this.recordData(interceptionKey, params.args);
+    this.recordData(interceptionKey, {
+      value: params.args,
+      type: RecordingDataType.Data,
+    });
   }
 
   /**
@@ -198,7 +228,7 @@ export class TapeRecorder {
    * @param key - the key to put the data under
    * @param data - the data to put
    */
-  recordData(key: string, data: any): void {
+  recordData(key: string, data: RecordedData): void {
     this.assertRecording();
     console.log(
       `Recording data for recording id ${
@@ -288,9 +318,11 @@ export class TapeRecorder {
     interceptionKey: string,
     args: any[]
   ): any {
-    const recorded = this.playbackRecording!.getData(interceptionKey);
+    const recorded = this.playbackRecording!.getData(
+      interceptionKey
+    ) as RecordedData;
 
-    if ("exception" in recorded) {
+    if (recorded.type == RecordingDataType.Exception) {
       let error;
       // if the recorded value is an exception, we need to throw it
       // but if the exception was of type Error we need to serialize it and recreate it as a class Error.
@@ -309,8 +341,15 @@ export class TapeRecorder {
       } else {
         throw error;
       }
+    } else if (recorded.type == RecordingDataType.Data) {
+      if (recorded.isPromise) {
+        return Promise.resolve(recorded.value);
+      } else {
+        return recorded.value;
+      }
     }
-    return recorded.value;
+
+    throw "Recorded data has invalid type " + recorded.type;
   }
 
   /**
@@ -537,7 +576,10 @@ export class TapeRecorder {
 
     let result;
     try {
-      this.recordData(`input: ${OPERATION_INPUT_ALIAS}`, params.args);
+      this.recordData(`input: ${OPERATION_INPUT_ALIAS}`, {
+        value: params.args,
+        type: RecordingDataType.Data,
+      });
       result = this.executeOperationFunc(params.func, params.args);
     } catch (error) {
       throw handleException(error);
@@ -609,9 +651,16 @@ export class TapeRecorder {
     const cleanup = () => {
       this.currentlyInInterception = false;
     };
-    const handleResult = (result: outputType): outputType => {
+    const handleResult = (
+      result: outputType,
+      isPromise: boolean
+    ): outputType => {
       if (interceptionKey) {
-        this.recordData(interceptionKey, { value: result });
+        this.recordData(interceptionKey, {
+          value: result,
+          isPromise,
+          type: RecordingDataType.Data,
+        });
       }
       cleanup();
       return result;
@@ -625,9 +674,14 @@ export class TapeRecorder {
             isError: true,
             exception: JSON.stringify(error, Object.getOwnPropertyNames(error)),
             isPromise,
+            type: RecordingDataType.Exception,
           });
         } else {
-          this.recordData(interceptionKey, { exception: error, isPromise });
+          this.recordData(interceptionKey, {
+            exception: error,
+            isPromise,
+            type: RecordingDataType.Exception,
+          });
         }
       }
       cleanup();
@@ -643,14 +697,14 @@ export class TapeRecorder {
     if (result && typeof result.then === "function") {
       result.then(
         (realResult: any) => {
-          return handleResult(realResult);
+          return handleResult(realResult, true);
         },
         (err: any) => {
           handleException(err, true);
         }
       );
     } else {
-      return handleResult(result);
+      return handleResult(result, false);
     }
 
     return result;
