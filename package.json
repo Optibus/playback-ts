@@ -5,7 +5,7 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc",
-    "test": "jest --config jest.config.ts"
+    "test": "jest --config jest.config.ts --collect-coverage"
   },
   "devDependencies": {
     "@types/jest": "^27.0.3",
