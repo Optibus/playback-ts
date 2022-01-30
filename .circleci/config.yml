@@ -22,7 +22,7 @@ jobs:
           paths:
             - ~/.cache/npmrc
             - ~/circleci-build/node_modules
-      - run: npm run test
+      - run: npm run test-ci
       - codecov/upload
       - persist_to_workspace:
           root: /home/circleci
