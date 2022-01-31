@@ -1,0 +1,35 @@
+version: 2.1
+
+orbs:
+  codecov: codecov/codecov@3.2.2
+
+jobs:
+  test:
+    docker:
+      - image: circleci/node:14.18.0
+    working_directory: ~/circleci-build
+    steps:
+      - checkout
+      - restore_cache:
+          keys:
+            - v1-deps-{{ checksum "package-lock.json" }}
+            - v1-deps-
+      - run: npm install
+      - save_cache:
+          keys:
+            - v1-deps-{{ checksum "package-lock.json" }}
+            - v1-deps-
+          paths:
+            - ~/.cache/npmrc
+            - ~/circleci-build/node_modules
+      - run: npm run test-ci
+      - codecov/upload
+      - persist_to_workspace:
+          root: /home/circleci
+          paths:
+            - circleci-build
+
+workflows:
+  build-and-test:
+    jobs:
+      - test
