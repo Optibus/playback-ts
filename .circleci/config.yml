@@ -30,6 +30,6 @@ jobs:
             - circleci-build
 
 workflows:
-  build-and-deploy:
+  build-and-test:
     jobs:
       - test
