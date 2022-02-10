@@ -349,7 +349,7 @@ export class TapeRecorder {
       }
     }
 
-    throw "Recorded data has invalid type " + recorded.type;
+    throw `Recorded data has invalid type ${(recorded as any).type}`;
   }
 
   /**
