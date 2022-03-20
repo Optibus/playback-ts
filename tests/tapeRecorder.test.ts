@@ -1087,7 +1087,6 @@ describe("tape recorder", () => {
           const result = wrapOperation();
           expect(result).toBe(15);
           test.seed = 2;
-
           const recordingId = tapeCassette.getLastRecordingId();
           expect(recordingId).toBeDefined();
           if (!recordingId) {
