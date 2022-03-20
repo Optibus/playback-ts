@@ -618,7 +618,7 @@ describe("tape recorder", () => {
               (value) => {
                 console.log("then");
                 return value;
-              }).catch((error) => {,
+              }).catch((error) => {
                 console.log("error");
                 return error.message;
               }
@@ -1243,5 +1243,63 @@ describe("tape recorder", () => {
         });
       });
     });
+
+    describe("decorators interceptors", () => {
+      class TestService {
+        public seed: number;
+        constructor(seed: number) {
+            this.seed = seed;
+        }
+        
+        decoratorInterceptInput(number1: number, number2: number) {
+          const decoratorHandler = tapeRecorder.decoratorInterceptInput();
+          const func = () => {
+            return number1 + number2 + this.seed;
+          }
+          const fakeDecorator = decoratorHandler({}, '', {value:func});
+          return fakeDecorator.value.apply(this, arguments) as number;
+        }
+      
+        decoratorInterceptOutput(number1: number, number2: number) {
+          const decoratorHandler = tapeRecorder.decoratorInterceptOutput();
+          const func = async() => {
+            await delay(1000);
+            return number1 + number2 + this.seed;
+          }
+          const fakeDecorator = decoratorHandler({}, '', {value:func});
+          return fakeDecorator.value.apply(this, arguments) as Promise<number>;
+        }
+      }
+
+      test("test record and playback basic operation data interception with arguments - async", async() => {
+        const testService = new TestService(2);
+        async function operation () {
+          const val1 = testService.decoratorInterceptInput(2, 3);
+          const val2 = await testService.decoratorInterceptOutput(4, 6);
+          return val1 + val2;
+        }
+    
+        const wrapOperation = tapeRecorder.wrapOperation(
+          "operation",
+          operation
+        );
+
+        const result = await wrapOperation();
+        expect(result).toBe(19);
+
+        testService.seed = 1234;
+        const recordingId = tapeCassette.getLastRecordingId();
+        expect(recordingId).toBeDefined();
+        if (!recordingId) {
+          throw "recordingId must be defined";
+        }
+
+        const playbackResult = await tapeRecorder.play(
+          recordingId,
+          wrapOperation
+        );
+        assertPlaybackVsRecording(playbackResult, result);
+      })
+    })
   });
 });
