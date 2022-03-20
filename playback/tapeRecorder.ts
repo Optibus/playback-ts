@@ -709,4 +709,40 @@ export class TapeRecorder {
 
     return result;
   }
+
+  /**
+   * use the interceptInput as decorator 
+   * @returns PropertyDescriptor
+   */
+  public decoratorInterceptInput() {
+    return this.decoratorHandler('input');
+  }
+
+  /**
+   * use the interceptOutput as decorator 
+   * @returns PropertyDescriptor
+   */
+  public decoratorInterceptOutput() {
+    return this.decoratorHandler('output');
+  }
+
+  /**
+   * @param decoratorType - input | output
+   * @returns PropertyDescriptor
+   */
+  private decoratorHandler(decoratorType: 'input' | 'output') {
+    const self = this;
+    return (target: Object, propertyKey: string, descriptor: PropertyDescriptor) => {
+      const originalMethod = descriptor.value;
+      descriptor.value = function(...args: any[]) {
+        const interceptorHandler = decoratorType === 'output' ? self.interceptOutput : self.interceptInput;
+        const interceptorFunc = interceptorHandler.call(self, {
+          alias: `${this.constructor.name}/${originalMethod.name}`,
+          func:  originalMethod.bind(this),
+        });
+        return interceptorFunc.apply(this, [...args]);
+      }
+      return descriptor;
+    }
+  }
 }
